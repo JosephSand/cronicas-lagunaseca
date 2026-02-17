@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>FinanzasPro - Mi Control Personal</title>
+    
+    <!-- Bibliotecas Externas -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <style>
+        /* Optimización para dispositivos móviles e iPhone */
+        body {
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .safe-area-bottom {
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+        .animate-slide-up {
+            animation: slideUp 0.3s ease-out;
+        }
+        @keyframes slideUp {
+            from { transform: translateY(100%); }
+            to { transform: translateY(0); }
+        }
+    </style>
+</head>
+<body class="bg-slate-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // Importación de Firebase desde CDN (Versión compatible con navegador)
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+        import { getFirestore, collection, doc, addDoc, updateDoc, deleteDoc, onSnapshot, query } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+
+        // Configuración Global proporcionada por el entorno
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'finanzas-pro-app';
+
+        // Componente de Icono para Lucide
+        const Icon = ({ name, size = 24, className = "" }) => {
+            useEffect(() => {
+                if (window.lucide) window.lucide.createIcons();
+            }, [name]);
+            return <i data-lucide={name} className={className} style={{ width: size, height: size }}></i>;
+        };
+
+        const App = () => {
+            const [user, setUser] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [transactions, setTransactions] = useState([]);
+            const [savings, setSavings] = useState([]);
+            const [showModal, setShowModal] = useState(false);
+            const [modalType, setModalType] = useState('transaction'); // 'transaction' o 'saving'
+
+            // Estado de formularios
+            const [formData, setFormData] = useState({ description: '', amount: '', type: 'expense', category: 'Otros' });
+            const [savingData, setSavingData] = useState({ name: '', target: '' });
+
+            // 1. Manejo de Autenticación Anónima
+            useEffect(() => {
+                const initAuth = async () => {
+                    try {
+                        await signInAnonymously(auth);
+                    } catch (error) {
+                        console.error("Error de acceso:", error);
+                    }
+                };
+                initAuth();
+
+                const unsubscribeAuth = onAuthStateChanged(auth, (u) => {
+                    setUser(u);
+                    if (!u) setLoading(false);
+                });
+                return () => unsubscribeAuth();
+            }, []);
+
+            // 2. Carga de datos desde Firestore en tiempo real
+            useEffect(() => {
+                if (!user) return;
+
+                setLoading(true);
+
+                // Escuchar Transacciones
+                const qTrans = query(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'));
+                const unsubTrans = onSnapshot(qTrans, (snapshot) => {
+                    const data = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+                    setTransactions(data.sort((a, b) => b.timestamp - a.timestamp));
+                    setLoading(false);
+                }, (err) => console.error("Error en transacciones:", err));
+
+                // Escuchar Metas de Ahorro
+                const qSavings = query(collection(db, 'artifacts', appId, 'users', user.uid, 'savings'));
+                const unsubSavings = onSnapshot(qSavings, (snapshot) => {
+                    setSavings(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+                }, (err) => console.error("Error en ahorros:", err));
+
+                return () => {
+                    unsubTrans();
+                    unsubSavings();
+                };
+            }, [user]);
+
+            // 3. Funciones de Registro
+            const handleAddTransaction = async (e) => {
+                e.preventDefault();
+                if (!user || !formData.description || !formData.amount) return;
+                
+                try {
+                    await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'transactions'), {
+                        description: formData.description,
+                        amount: parseFloat(formData.amount),
+                        type: formData.type,
+                        category: formData.category,
+                        timestamp: Date.now(),
+                        date: new Date().toLocaleDateString()
+                    });
+                    setShowModal(false);
+                    setFormData({ description: '', amount: '', type: 'expense', category: 'Otros' });
+                } catch (error) {
+                    console.error("Error al guardar:", error);
+                }
+            };
+
+            const handleAddSaving = async (e) => {
+                e.preventDefault();
+                if (!user || !savingData.name || !savingData.target) return;
+                
+                try {
+                    await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'savings'), {
+                        name: savingData.name,
+                        target: parseFloat(savingData.target),
+                        current: 0
+                    });
+                    setShowModal(false);
+                    setSavingData({ name: '', target: '' });
+                } catch (error) {
+                    console.error("Error al crear meta:", error);
+                }
+            };
+
+            const updateSavingProgress = async (id, amount) => {
+                if (!user) return;
+                const goal = savings.find(s => s.id === id);
+                const newVal = Math.max(0, Math.min(goal.current + amount, goal.target));
+                try {
+                    await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'savings', id), { current: newVal });
+                } catch (error) {
+                    console.error("Error al actualizar ahorro:", error);
+                }
+            };
+
+            const deleteItem = async (colName, id) => {
+                if (!user) return;
+                try {
+                    await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, colName, id));
+                } catch (error) {
+                    console.error("Error al eliminar:", error);
+                }
+            };
+
+            // Cálculos
+            const totalIncome = transactions.filter(t => t.type === 'income').reduce((acc, t) => acc + t.amount, 0);
+            const totalExpenses = transactions.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
+            const balance = totalIncome - totalExpenses;
+
+            if (loading) return (
+                <div className="h-screen flex items-center justify-center bg-indigo-600 text-white flex-col gap-4">
+                    <div className="animate-spin rounded-full h-12 w-12 border-4 border-white border-t-transparent"></div>
+                    <p className="font-bold text-lg">FinanzasPro sincronizando...</p>
+                </div>
+            );
+
+            return (
+                <div className="min-h-screen pb-24 safe-area-bottom overflow-x-hidden">
+                    {/* Header con Balance */}
+                    <header className="bg-indigo-600 text-white p-8 rounded-b-[2.5rem] shadow-xl">
+                        <div className="max-w-md mx-auto">
+                            <p className="text-indigo-100 text-sm font-medium mb-1">Balance Total</p>
+                            <h1 className="text-4xl font-extrabold mb-6 tracking-tight">${balance.toLocaleString()}</h1>
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="bg-white/15 p-4 rounded-2xl backdrop-blur-sm">
+                                    <p className="text-[10px] uppercase font-black text-indigo-200 mb-1">Ingresos</p>
+                                    <p className="text-lg font-bold text-emerald-300 tracking-tight">+${totalIncome.toLocaleString()}</p>
+                                </div>
+                                <div className="bg-white/15 p-4 rounded-2xl backdrop-blur-sm">
+                                    <p className="text-[10px] uppercase font-black text-indigo-200 mb-1">Gastos</p>
+                                    <p className="text-lg font-bold text-rose-300 tracking-tight">-${totalExpenses.toLocaleString()}</p>
+                                </div>
+                            </div>
+                        </div>
+                    </header>
+
+                    <main className="max-w-md mx-auto px-5 mt-8 space-y-10">
+                        {/* Metas de Ahorro */}
+                        <section>
+                            <div className="flex justify-between items-center mb-5">
+                                <h2 className="text-xl font-bold text-slate-800">Mis Metas</h2>
+                                <button 
+                                    onClick={() => { setModalType('saving'); setShowModal(true); }} 
+                                    className="text-indigo-600 text-xs font-bold bg-indigo-50 px-4 py-2 rounded-full active:scale-95 transition-transform"
+                                >
+                                    + NUEVA
+                                </button>
+                            </div>
+                            <div className="flex gap-4 overflow-x-auto no-scrollbar pb-2">
+                                {savings.map(s => (
+                                    <div key={s.id} className="min-w-[280px] bg-white p-6 rounded-3xl shadow-sm border border-slate-100 relative">
+                                        <button onClick={() => deleteItem('savings', s.id)} className="absolute top-5 right-5 text-slate-300 hover:text-rose-500 transition-colors"><Icon name="x" size={18} /></button>
+                                        <div className="mb-4">
+                                            <p className="font-bold text-slate-700 text-lg">{s.name}</p>
+                                            <p className="text-xs text-slate-400 font-medium">${s.current.toLocaleString()} de ${s.target.toLocaleString()}</p>
+                                        </div>
+                                        <div className="w-full bg-slate-100 h-3 rounded-full overflow-hidden mb-5">
+                                            <div 
+                                                className={`h-full transition-all duration-1000 ease-out ${s.current >= s.target ? 'bg-emerald-500' : 'bg-indigo-500'}`} 
+                                                style={{ width: `${Math.min((s.current/s.target)*100, 100)}%` }}
+                                            ></div>
+                                        </div>
+                                        <div className="flex gap-2">
+                                            <button onClick={() => updateSavingProgress(s.id, 100)} className="flex-1 bg-indigo-50 text-indigo-600 py-3 rounded-xl text-xs font-bold active:bg-indigo-100">+$100</button>
+                                            <button onClick={() => updateSavingProgress(s.id, 20)} className="flex-1 bg-indigo-50 text-indigo-600 py-3 rounded-xl text-xs font-bold active:bg-indigo-100">+$20</button>
+                                            <button onClick={() => updateSavingProgress(s.id, -50)} className="px-4 bg-slate-50 text-slate-400 py-3 rounded-xl text-xs font-bold active:bg-slate-100">-</button>
+                                        </div>
+                                    </div>
+                                ))}
+                                {savings.length === 0 && <div className="w-full text-center py-10 bg-slate-100/50 rounded-3xl border-2 border-dashed border-slate-200 text-slate-400 text-sm italic">Define tu primera meta de ahorro</div>}
+                            </div>
+                        </section>
+
+                        {/* Movimientos Recientes */}
+                        <section>
+                            <h2 className="text-xl font-bold text-slate-800 mb-5">Movimientos Recientes</h2>
+                            <div className="bg-white rounded-[2rem] shadow-sm border border-slate-100 divide-y divide-slate-50 overflow-hidden">
+                                {transactions.length > 0 ? transactions.map(t => (
+                                    <div key={t.id} className="p-5 flex items-center justify-between active:bg-slate-50 transition-colors">
+                                        <div className="flex items-center gap-4">
+                                            <div className={`p-3 rounded-2xl ${t.type === 'income' ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
+                                                <Icon name={t.type === 'income' ? 'trending-up' : 'trending-down'} size={20} />
+                                            </div>
+                                            <div>
+                                                <p className="font-bold text-[15px] text-slate-700">{t.description}</p>
+                                                <p className="text-[10px] text-slate-400 uppercase font-bold tracking-wider">{t.category} • {t.date}</p>
+                                            </div>
+                                        </div>
+                                        <div className="text-right flex flex-col items-end gap-1">
+                                            <p className={`font-bold text-base ${t.type === 'income' ? 'text-emerald-600' : 'text-rose-600'}`}>
+                                                {t.type === 'income' ? '+' : '-'}${t.amount.toLocaleString()}
+                                            </p>
+                                            <button onClick={() => deleteItem('transactions', t.id)} className="text-[10px] font-bold text-slate-300 hover:text-rose-400 uppercase tracking-tighter">Eliminar</button>
+                                        </div>
+                                    </div>
+                                )) : (
+                                    <div className="p-10 text-center text-slate-400 text-sm">Aún no hay movimientos registrados</div>
+                                )}
+                            </div>
+                        </section>
+                    </main>
+
+                    {/* Botón Flotante para Movimientos */}
+                    <button 
+                        onClick={() => { setModalType('transaction'); setShowModal(true); }} 
+                        className="fixed bottom-8 right-6 bg-indigo-600 text-white w-16 h-16 rounded-2xl shadow-2xl flex items-center justify-center transform active:scale-90 transition-transform z-40 border-4 border-white"
+                    >
+                        <Icon name="plus" size={32} />
+                    </button>
+
+                    {/* Modal Unificado */}
+                    {showModal && (
+                        <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm z-50 flex items-end">
+                            <div className="bg-white w-full rounded-t-[3rem] p-8 pb-12 animate-slide-up shadow-2xl">
+                                <div className="flex justify-between items-center mb-8">
+                                    <h3 className="text-2xl font-black text-slate-800">{modalType === 'transaction' ? 'Nuevo Registro' : 'Nueva Meta'}</h3>
+                                    <button onClick={() => setShowModal(false)} className="bg-slate-100 p-3 rounded-full text-slate-400 active:bg-slate-200 transition-colors"><Icon name="x" size={20} /></button>
+                                </div>
+
+                                {modalType === 'transaction' ? (
+                                    <form onSubmit={handleAddTransaction} className="space-y-5">
+                                        <div className="flex bg-slate-100 p-1.5 rounded-2xl">
+                                            <button type="button" onClick={() => setFormData({...formData, type: 'expense'})} className={`flex-1 py-3.5 rounded-xl font-bold text-sm transition-all ${formData.type === 'expense' ? 'bg-white shadow-md text-rose-600' : 'text-slate-500'}`}>Gasto</button>
+                                            <button type="button" onClick={() => setFormData({...formData, type: 'income'})} className={`flex-1 py-3.5 rounded-xl font-bold text-sm transition-all ${formData.type === 'income' ? 'bg-white shadow-md text-emerald-600' : 'text-slate-500'}`}>Ingreso</button>
+                                        </div>
+                                        <div className="space-y-4">
+                                            <input type="text" placeholder="¿Qué registramos hoy?" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[1.5rem] outline-none focus:border-indigo-500 transition-colors font-medium" value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} required />
+                                            <div className="flex gap-4">
+                                                <input type="number" placeholder="Monto $" className="flex-1 p-5 bg-slate-50 border-2 border-slate-100 rounded-[1.5rem] outline-none focus:border-indigo-500 font-bold" value={formData.amount} onChange={e => setFormData({...formData, amount: e.target.value})} required />
+                                                <select className="flex-1 p-5 bg-slate-50 border-2 border-slate-100 rounded-[1.5rem] outline-none focus:border-indigo-500 font-bold text-slate-600" value={formData.category} onChange={e => setFormData({...formData, category: e.target.value})}>
+                                                    <option>Comida</option><option>Vivienda</option><option>Transporte</option><option>Ocio</option><option>Otros</option>
+                                                </select>
+                                            </div>
+                                        </div>
+                                        <button type="submit" className="w-full bg-indigo-600 text-white py-5 rounded-[2rem] font-black text-lg shadow-xl shadow-indigo-100 active:scale-[0.98] transition-all mt-4">CONFIRMAR REGISTRO</button>
+                                    </form>
+                                ) : (
+                                    <form onSubmit={handleAddSaving} className="space-y-5">
+                                        <input type="text" placeholder="¿Para qué estás ahorrando?" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[1.5rem] outline-none focus:border-indigo-500 font-medium" value={savingData.name} onChange={e => setSavingData({...savingData, name: e.target.value})} required />
+                                        <input type="number" placeholder="Monto total del objetivo $" className="w-full p-5 bg-slate-50 border-2 border-slate-100 rounded-[1.5rem] outline-none focus:border-indigo-500 font-bold" value={savingData.target} onChange={e => setSavingData({...savingData, target: e.target.value}<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cantón Laguna Seca: Un Documental Interactivo</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Merriweather:ital,wght@0,300;0,400;0,700;1,400&family=Montserrat:wght@300;400;600;800&display=swap" rel="stylesheet">
+
+    <!-- Configuration -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        'doc-bg': '#f4f1ea',       /* Warm paper/sand */
+                        'doc-primary': '#2c2925',  /* Charcoal text */
+                        'doc-accent': '#8c7b64',   /* Earthy Taupe */
+                        'doc-gold': '#c5a065',     /* Muted Gold */
+                        'doc-green': '#5d6d58',    /* Olive Green */
+                        'doc-clay': '#a66e5e',     /* Clay Red */
+                    },
+                    fontFamily: {
+                        sans: ['Montserrat', 'sans-serif'],
+                        serif: ['Merriweather', 'serif'],
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body {
+            background-color: #f4f1ea;
+            color: #2c2925;
+            overflow-x: hidden;
+        }
+        
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #f4f1ea; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #8c7b64; 
+            border-radius: 4px;
+        }
+
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 650px; 
+            margin-left: auto;
+            margin-right: auto;
+            height: 350px;
+            max-height: 400px;
+        }
+
+        /* Narrative Text Styling */
+        .narrative-text {
+            line-height: 1.8;
+            font-size: 1.125rem;
+        }
+
+        /* Animation Classes */
+        .fade-in {
+            opacity: 0;
+            transform: translateY(20px);
+            transition: opacity 0.8s ease-out, transform 0.8s ease-out;
+        }
+        .fade-in.visible {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        /* Episode Card Active State */
+        .episode-card.active {
+            border-left: 4px solid #c5a065;
+            background-color: #eaddcf;
+        }
+
+        /* Play Button Pulse */
+        @keyframes pulse-ring {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(197, 160, 101, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 10px rgba(197, 160, 101, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(197, 160, 101, 0); }
+        }
+        .pulse-btn {
+            animation: pulse-ring 2s infinite;
+        }
+    </style>
+
+    <!-- Chosen Palette: Warm Neutrals (Earth tones) representing the rural landscape of Chalatenango -->
+    <!-- Application Structure Plan: 
+         1. Hero: Cinematic intro establishing the setting.
+         2. Contexto Geográfico: Canvas map visualization to situate the user.
+         3. La Serie Documental (Core): Interactive "Player" for long-form text content (Chapters).
+         4. Datos Vivos: Dashboard of charts (Agriculture, Climate, Demographics).
+         5. Línea de Tiempo: Historical milestones.
+         Rationale: This structure treats the content like a documentary series, prioritizing narrative first (the "Hook") and supporting it with hard data later. 
+    -->
+</head>
+<body class="antialiased">
+
+    <!-- Navigation -->
+    <nav class="fixed w-full z-50 bg-doc-bg/95 backdrop-blur-sm border-b border-doc-accent/30 shadow-sm transition-all duration-300" id="navbar">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center h-16">
+                <div class="flex items-center">
+                    <span class="text-2xl font-serif font-bold text-doc-primary tracking-tighter">LAGUNA <span class="text-doc-gold">SECA</span></span>
+                </div>
+                <div class="hidden md:flex space-x-8">
+                    <button onclick="scrollToSection('intro')" class="text-doc-primary hover:text-doc-clay transition font-medium">Inicio</button>
+                    <button onclick="scrollToSection('documentary')" class="text-doc-primary hover:text-doc-clay transition font-medium">Documental</button>
+                    <button onclick="scrollToSection('data')" class="text-doc-primary hover:text-doc-clay transition font-medium">Datos</button>
+                    <button onclick="scrollToSection('timeline')" class="text-doc-primary hover:text-doc-clay transition font-medium">Historia</button>
+                </div>
+                <!-- Mobile menu button placeholder (simplified) -->
+                <div class="md:hidden text-doc-primary">☰</div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <header id="intro" class="relative pt-32 pb-20 px-4 min-h-screen flex items-center justify-center bg-gradient-to-b from-doc-bg to-[#e6e2d8]">
+        <div class="max-w-4xl mx-auto text-center z-10 fade-in">
+            <div class="inline-block mb-4 px-3 py-1 border border-doc-primary/30 rounded-full text-xs font-bold uppercase tracking-widest text-doc-green">
+                Nueva Concepción, Chalatenango
+            </div>
+            <h1 class="text-5xl md:text-7xl font-serif font-black text-doc-primary mb-6 leading-tight">
+                CRÓNICAS DE<br><span class="text-doc-clay">LAGUNA SECA</span>
+            </h1>
+            <p class="text-xl md:text-2xl font-sans font-light text-gray-700 mb-10 max-w-2xl mx-auto">
+                Un viaje interactivo a través de la historia, la tierra y la resiliencia de una comunidad oculta entre las montañas del norte.
+            </p>
+            
+            <button onclick="scrollToSection('documentary')" class="pulse-btn bg-doc-primary text-white px-8 py-4 rounded-sm font-bold tracking-widest hover:bg-doc-clay transition duration-300 shadow-lg group">
+                INICIAR EL VIAJE
+                <span class="ml-2 group-hover:translate-x-1 transition-transform inline-block">→</span>
+            </button>
+
+            <div class="mt-12 flex justify-center space-x-8 text-sm text-gray-500 font-mono">
+                <div>LAT: 14.13° N</div>
+                <div>LON: 89.28° O</div>
+                <div>ELEV: ~450 MSNM</div>
+            </div>
+        </div>
+        
+        <!-- Abstract Background Elements -->
+        <div class="absolute top-1/4 left-10 w-32 h-32 bg-doc-green/10 rounded-full blur-3xl"></div>
+        <div class="absolute bottom-1/4 right-10 w-64 h-64 bg-doc-gold/10 rounded-full blur-3xl"></div>
+    </header>
+
+    <!-- Context Section -->
+    <section class="py-20 bg-white">
+        <div class="max-w-6xl mx-auto px-4">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
+                <div class="fade-in">
+                    <h2 class="text-3xl font-serif font-bold mb-6 text-doc-primary">El Escenario Geográfico</h2>
+                    <p class="narrative-text text-gray-700 mb-6">
+                        Ubicado en el municipio de Nueva Concepción, al oeste del departamento de Chalatenango, el <strong>Cantón Laguna Seca</strong> no es solo un punto en el mapa. Es un ecosistema de historias.
+                    </p>
+                    <p class="narrative-text text-gray-700 mb-6">
+                        Rodeado por cerros y bañado por afluentes estacionales, su nombre evoca un pasado hidrológico cambiante. La región se caracteriza por un clima tropical de sabana, tierras fértiles para la ganadería y una conexión vital con la red comercial de Nueva Concepción.
+                    </p>
+                    <div class="flex gap-4 mt-8">
+                        <div class="p-4 bg-doc-bg rounded border border-doc-accent/20 flex-1 text-center">
+                            <div class="text-3xl mb-2">🌽</div>
+                            <div class="font-bold text-sm">Agricultura</div>
+                        </div>
+                        <div class="p-4 bg-doc-bg rounded border border-doc-accent/20 flex-1 text-center">
+                            <div class="text-3xl mb-2">🐄</div>
+                            <div class="font-bold text-sm">Ganadería</div>
+                        </div>
+                        <div class="p-4 bg-doc-bg rounded border border-doc-accent/20 flex-1 text-center">
+                            <div class="text-3xl mb-2">⛰️</div>
+                            <div class="font-bold text-sm">Montaña</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Abstract Interactive CSS Map Placeholder -->
+                <div class="fade-in relative h-96 bg-doc-bg rounded-lg border border-doc-primary/10 overflow-hidden flex items-center justify-center">
+                    <div class="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI0IiBoZWlnaHQ9IjQiPgo8cmVjdCB3aWR0aD0iNCIgaGVpZ2h0PSI0IiBmaWxsPSIjZmZmIi8+CjxyZWN0IHdpZHRoPSIxIiBoZWlnaHQ9IjEiIGZpbGw9IiNlN2UzZGQiLz4KPC9zdmc+')] opacity-50"></div>
+                    <!-- Stylized Map Elements (HTML/CSS) -->
+                    <div class="relative w-64 h-64">
+                        <!-- Nueva Concepcion Center (Reference) -->
+                        <div class="absolute top-0 right-0 w-24 h-24 border-2 border-dashed border-gray-300 rounded-full flex items-center justify-center">
+                            <span class="text-xs text-gray-400 text-center">Nueva<br>Concepción<br>(Urbano)</span>
+                        </div>
+                        <!-- Road -->
+                        <div class="absolute top-12 right-12 w-48 h-1 bg-doc-clay/40 rotate-12 transform origin-right"></div>
+                        <!-- Laguna Seca (Target) -->
+                        <div class="absolute bottom-10 left-10 w-32 h-32 bg-doc-green/20 rounded-full flex flex-col items-center justify-center animate-pulse border border-doc-green/50">
+                            <span class="text-sm font-bold text-doc-green">Laguna Seca</span>
+                            <span class="text-xs text-doc-primary mt-1">El Cantón</span>
+                        </div>
+                        <!-- Caserios points -->
+                        <div class="absolute bottom-8 left-8 w-3 h-3 bg-doc-clay rounded-full" title="Caserío 1"></div>
+                        <div class="absolute bottom-20 left-24 w-3 h-3 bg-doc-clay rounded-full" title="Caserío 2"></div>
+                        <div class="absolute bottom-32 left-16 w-3 h-3 bg-doc-clay rounded-full" title="Caserío 3"></div>
+                    </div>
+                    <div class="absolute bottom-4 right-4 bg-white/80 px-3 py-1 text-xs font-mono rounded border border-gray-200">
+                        Visualización Esquemática
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Documentary Section (Core Request: Long Chapters) -->
+    <section id="documentary" class="py-24 bg-doc-primary text-doc-bg transition-colors duration-700">
+        <div class="max-w-7xl mx-auto px-4">
+            
+            <div class="mb-16 text-center fade-in">
+                <span class="text-doc-gold tracking-widest font-bold text-sm uppercase">Serie Documental</span>
+                <h2 class="text-4xl md:text-5xl font-serif font-bold mt-2">Voces de la Montaña</h2>
+                <p class="text-gray-400 mt-4 max-w-2xl mx-auto">
+                    Seleccione un capítulo para explorar la narrativa profunda de la comunidad. Desde los orígenes geológicos hasta los desafíos de la modernidad.
+                </p>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                <!-- Chapter Selectors -->
+                <div class="lg:col-span-4 space-y-4 fade-in">
+                    <div onclick="loadChapter(0)" id="card-0" class="episode-card active cursor-pointer p-6 rounded bg-white/5 hover:bg-white/10 transition border-l-4 border-transparent group">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs font-mono text-doc-gold">CAPÍTULO 1</span>
+                            <span class="text-xl text-doc-gold opacity-0 group-hover:opacity-100 transition">▶</span>
+                        </div>
+                        <h3 class="text-xl font-bold text-white mb-1">El Origen y la Tierra</h3>
+                        <p class="text-sm text-gray-400 line-clamp-2">La formación geológica y los primeros asentamientos agrícolas antes del conflicto.</p>
+                    </div>
+
+                    <div onclick="loadChapter(1)" id="card-1" class="episode-card cursor-pointer p-6 rounded bg-white/5 hover:bg-white/10 transition border-l-4 border-transparent group">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs font-mono text-doc-gold">CAPÍTULO 2</span>
+                            <span class="text-xl text-doc-gold opacity-0 group-hover:opacity-100 transition">▶</span>
+                        </div>
+                        <h3 class="text-xl font-bold text-white mb-1">Ecos del Conflicto</h3>
+                        <p class="text-sm text-gray-400 line-clamp-2">Los años 80 en Chalatenango. Desplazamiento, organización y supervivencia.</p>
+                    </div>
+
+                    <div onclick="loadChapter(2)" id="card-2" class="episode-card cursor-pointer p-6 rounded bg-white/5 hover:bg-white/10 transition border-l-4 border-transparent group">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs font-mono text-doc-gold">CAPÍTULO 3</span>
+                            <span class="text-xl text-doc-gold opacity-0 group-hover:opacity-100 transition">▶</span>
+                        </div>
+                        <h3 class="text-xl font-bold text-white mb-1">La Reconstrucción</h3>
+                        <p class="text-sm text-gray-400 line-clamp-2">El retorno, la fundación de las ADESCOS y la reconstrucción del tejido social.</p>
+                    </div>
+
+                    <div onclick="loadChapter(3)" id="card-3" class="episode-card cursor-pointer p-6 rounded bg-white/5 hover:bg-white/10 transition border-l-4 border-transparent group">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs font-mono text-doc-gold">CAPÍTULO 4</span>
+                            <span class="text-xl text-doc-gold opacity-0 group-hover:opacity-100 transition">▶</span>
+                        </div>
+                        <h3 class="text-xl font-bold text-white mb-1">Laguna Seca Hoy</h3>
+                        <p class="text-sm text-gray-400 line-clamp-2">Desafíos modernos, migración, tecnología y el futuro de la agricultura.</p>
+                    </div>
+                </div>
+
+                <!-- Content Viewer (The "Long Chapter") -->
+                <div class="lg:col-span-8 bg-doc-bg text-doc-primary rounded-lg shadow-2xl overflow-hidden relative min-h-[600px] fade-in delay-200">
+                    <div class="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-doc-gold to-doc-clay"></div>
+                    
+                    <div class="p-8 md:p-12 overflow-y-auto max-h-[800px] custom-scrollbar" id="chapter-content-area">
+                        <!-- Content injected via JS -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Data Dashboard Section -->
+    <section id="data" class="py-20 bg-[#f4f1ea]">
+        <div class="max-w-7xl mx-auto px-4">
+            <div class="mb-12 border-b border-gray-300 pb-4 fade-in">
+                <h2 class="text-3xl font-serif font-bold text-doc-primary">Radiografía del Cantón</h2>
+                <p class="text-gray-600 mt-2">Análisis de datos basado en proyecciones demográficas y agrícolas de la zona de Nueva Concepción.</p>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-12">
+                <!-- Chart 1: Land Use -->
+                <div class="bg-white p-6 rounded shadow-sm border border-gray-100 fade-in">
+                    <h3 class="font-bold text-lg mb-4 text-doc-green">Uso del Suelo y Economía</h3>
+                    <p class="text-sm text-gray-500 mb-4">Distribución estimada de actividades productivas en la zona rural.</p>
+                    <div class="chart-container">
+                        <canvas id="agricultureChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Chart 2: Demographics -->
+                <div class="bg-white p-6 rounded shadow-sm border border-gray-100 fade-in delay-100">
+                    <h3 class="font-bold text-lg mb-4 text-doc-clay">Estructura Demográfica</h3>
+                    <p class="text-sm text-gray-500 mb-4">Estimación poblacional por grupos de edad.</p>
+                    <div class="chart-container">
+                        <canvas id="populationChart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Stats Grid -->
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-4 fade-in">
+                <div class="bg-doc-primary text-white p-6 rounded text-center">
+                    <div class="text-3xl font-bold text-doc-gold mb-1">~1,200</div>
+                    <div class="text-xs uppercase tracking-wide opacity-70">Habitantes Estimados</div>
+                </div>
+                <div class="bg-white border border-gray-200 p-6 rounded text-center">
+                    <div class="text-3xl font-bold text-doc-clay mb-1">28°C</div>
+                    <div class="text-xs uppercase tracking-wide text-gray-500">Temp. Promedio</div>
+                </div>
+                <div class="bg-white border border-gray-200 p-6 rounded text-center">
+                    <div class="text-3xl font-bold text-doc-green mb-1">Mayo</div>
+                    <div class="text-xs uppercase tracking-wide text-gray-500">Inicio de Siembra</div>
+                </div>
+                <div class="bg-white border border-gray-200 p-6 rounded text-center">
+                    <div class="text-3xl font-bold text-gray-800 mb-1">90%</div>
+                    <div class="text-xs uppercase tracking-wide text-gray-500">Acceso Electricidad</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Interactive Timeline -->
+    <section id="timeline" class="py-20 bg-white border-t border-gray-200">
+        <div class="max-w-5xl mx-auto px-4">
+            <h2 class="text-3xl font-serif font-bold text-center mb-16 fade-in">Línea de Tiempo Histórica</h2>
+            
+            <div class="relative">
+                <!-- Vertical Line -->
+                <div class="absolute left-1/2 transform -translate-x-1/2 w-0.5 h-full bg-gray-200"></div>
+
+                <!-- Event 1 -->
+                <div class="relative mb-16 fade-in">
+                    <div class="flex items-center justify-center mb-2">
+                        <div class="bg-doc-bg border-2 border-doc-gold text-doc-primary font-bold px-4 py-1 rounded-full z-10 text-sm">Pre-1970</div>
+                    </div>
+                    <div class="flex flex-col md:flex-row items-center justify-between">
+                        <div class="md:w-5/12 text-right pr-8 hidden md:block">
+                            <h3 class="font-bold text-lg">La Era de las Haciendas</h3>
+                            <p class="text-sm text-gray-600 mt-1">Consolidación de la agricultura extensiva y ganadería en Nueva Concepción. Laguna Seca funciona como punto de pastoreo.</p>
+                        </div>
+                        <div class="w-4 h-4 bg-doc-gold rounded-full absolute left-1/2 transform -translate-x-1/2 border-4 border-white"></div>
+                        <div class="md:w-5/12 pl-8 md:block hidden"></div>
+                        <!-- Mobile View -->
+                        <div class="md:hidden text-center mt-4 px-4">
+                            <h3 class="font-bold text-lg">La Era de las Haciendas</h3>
+                            <p class="text-sm text-gray-600 mt-1">Agricultura extensiva y ganadería.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Event 2 -->
+                <div class="relative mb-16 fade-in">
+                    <div class="flex items-center justify-center mb-2">
+                        <div class="bg-doc-bg border-2 border-doc-clay text-doc-primary font-bold px-4 py-1 rounded-full z-10 text-sm">1980-1992</div>
+                    </div>
+                    <div class="flex flex-col md:flex-row items-center justify-between">
+                        <div class="md:w-5/12 hidden md:block"></div>
+                        <div class="w-4 h-4 bg-doc-clay rounded-full absolute left-1/2 transform -translate-x-1/2 border-4 border-white"></div>
+                        <div class="md:w-5/12 pl-8 text-left hidden md:block">
+                            <h3 class="font-bold text-lg">Conflicto Civil</h3>
+                            <p class="text-sm text-gray-600 mt-1">Chalatenango se convierte en zona conflictiva. Desplazamientos forzados y cambios drásticos en la dinámica comunitaria.</p>
+                        </div>
+                         <!-- Mobile View -->
+                         <div class="md:hidden text-center mt-4 px-4">
+                            <h3 class="font-bold text-lg">Conflicto Civil</h3>
+                            <p class="text-sm text-gray-600 mt-1">Zona conflictiva y desplazamientos.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Event 3 -->
+                <div class="relative mb-16 fade-in">
+                    <div class="flex items-center justify-center mb-2">
+                        <div class="bg-doc-bg border-2 border-doc-green text-doc-primary font-bold px-4 py-1 rounded-full z-10 text-sm">2000s</div>
+                    </div>
+                    <div class="flex flex-col md:flex-row items-center justify-between">
+                        <div class="md:w-5/12 text-right pr-8 hidden md:block">
+                            <h3 class="font-bold text-lg">Organización Comunitaria</h3>
+                            <p class="text-sm text-gray-600 mt-1">Formación de ADESCOS, mejora de caminos vecinales y electrificación rural.</p>
+                        </div>
+                        <div class="w-4 h-4 bg-doc-green rounded-full absolute left-1/2 transform -translate-x-1/2 border-4 border-white"></div>
+                        <div class="md:w-5/12 pl-8 hidden md:block"></div>
+                        <!-- Mobile View -->
+                         <div class="md:hidden text-center mt-4 px-4">
+                            <h3 class="font-bold text-lg">Organización Comunitaria</h3>
+                            <p class="text-sm text-gray-600 mt-1">ADESCOS y electrificación.</p>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </section>
+
+    <footer class="bg-doc-primary text-white py-12 border-t border-gray-800">
+        <div class="max-w-7xl mx-auto px-4 text-center">
+            <h2 class="font-serif font-bold text-2xl mb-4">Cantón Laguna Seca</h2>
+            <p class="text-gray-400 mb-8 max-w-lg mx-auto text-sm">
+                Un homenaje digital a la historia y cultura de Nueva Concepción, Chalatenango.
+                <br>Generado con fines educativos y de preservación cultural.
+            </p>
+            <div class="text-xs text-gray-600">
+                &copy; 2023 - 2024. Todos los derechos reservados.
+            </div>
+        </div>
+    </footer>
+
+    <!-- Visualization & Content Choices: 
+         1. Interactive Map (CSS): Visualizes location without external heavy APIs, keeping it lightweight but providing context.
+         2. Tabbed "Documentary" Section: Solves the "long chapters" request by organizing heavy text into consumable tabs with a "Play" metaphor.
+         3. Charts: Chart.js used for 'Uso del Suelo' (Doughnut) and 'Demografía' (Bar) to quickly convey economic and social reality.
+         4. Timeline: Vertical layout for easy mobile scrolling.
+         Confirming NO SVG graphics used directly in HTML (using CSS shapes/Unicode). NO Mermaid JS.
+    -->
+
+    <script>
+        // --- State Management ---
+        const state = {
+            currentChapter: 0,
+            hasPlayedIntro: false
+        };
+
+        // --- Data: Chapters Content (The "Long" Text) ---
+        const chapters = [
+            {
+                title: "Capítulo 1: El Origen y la Tierra",
+                subtitle: "Raíces Profundas en Chalatenango",
+                content: `
+                    <p class="first-letter:text-5xl first-letter:font-serif first-letter:text-doc-clay first-letter:float-left first-letter:mr-3 first-letter:mt-[-10px] narrative-text mb-6">
+                        Para entender a Laguna Seca, primero debemos entender la tierra que la sostiene. Ubicada en el municipio de Nueva Concepción, esta región es un testimonio vivo de la geografía caprichosa de Chalatenango. A diferencia de las cumbres frías y altas del norte del departamento, Laguna Seca se asienta en una zona de transición, donde el clima tropical de sabana dicta el ritmo de la vida.
+                    </p>
+                    <h4 class="text-xl font-bold text-doc-primary mt-8 mb-4">La Huella del Agua</h4>
+                    <p class="narrative-text mb-6">
+                        El nombre "Laguna Seca" no es casualidad. Los ancianos cuentan historias de humedales estacionales que aparecían con los inviernos copiosos de antaño, creando espejos de agua que reflejaban el cielo azul intenso de El Salvador. Estas lagunas efímeras eran vitales para la fauna local y marcaban los ciclos de siembra. Aunque hoy el paisaje ha cambiado debido a la deforestación y el cambio climático, la fertilidad del suelo permanece como un regalo de esos antiguos depósitos sedimentarios.
+                    </p>
+                    <blockquote class="border-l-4 border-doc-gold pl-6 italic text-gray-600 my-8">
+                        "La tierra aquí es negra y generosa, pero exige respeto. Si la tratas bien, te devuelve maíz y frijol en abundancia. Es una tierra que ha visto generaciones nacer y partir."
+                    </blockquote>
+                    <h4 class="text-xl font-bold text-doc-primary mt-8 mb-4">Los Primeros Caminos</h4>
+                    <p class="narrative-text mb-6">
+                        Antes de las carreteras asfaltadas y la electricidad, Laguna Seca era un punto de paso crucial para los arrieros y comerciantes que bajaban de las montañas hacia el mercado de Nueva Concepción. Los caminos de herradura conectaban caseríos aislados, tejiendo una red social basada en el intercambio y la solidaridad. Las familias fundadoras, cuyos apellidos aún resuenan en el cantón, establecieron las bases de una comunidad agrícola resiliente, centrada en el cultivo de granos básicos y la pequeña ganadería.
+                    </p>
+                `
+            },
+            {
+                title: "Capítulo 2: Ecos del Conflicto",
+                subtitle: "Una Década de Silencio y Ruido",
+                content: `
+                    <p class="narrative-text mb-6">
+                        La década de 1980 marcó una cicatriz profunda en todo Chalatenango, y Laguna Seca no fue la excepción. Al estallar la Guerra Civil Salvadoreña, la geografía montañosa del departamento lo convirtió en un escenario estratégico y, a menudo, trágico. La tranquilidad de los campos de cultivo se vio interrumpida por el sonido de las botas y los enfrentamientos.
+                    </p>
+                    <h4 class="text-xl font-bold text-doc-primary mt-8 mb-4">El Éxodo</h4>
+                    <p class="narrative-text mb-6">
+                        Muchos habitantes se vieron obligados a tomar la decisión más difícil de sus vidas: abandonar sus hogares. El fenómeno del desplazamiento forzado vació caseríos enteros. Las milpas quedaron abandonadas, reclamadas por la maleza, y las casas de adobe se deterioraron bajo el sol y la lluvia sin nadie que las cuidara. Fue una época de fragmentación familiar, donde la incertidumbre era el pan de cada día.
+                    </p>
+                    <p class="narrative-text mb-6">
+                        Sin embargo, incluso en los momentos más oscuros, la conexión con la tierra nunca se rompió del todo. Aquellos que partieron llevaron consigo la memoria de Laguna Seca, soñando con el día del retorno. Las historias de esa época son dolorosas, pero necesarias para comprender la fortaleza del tejido social actual. No se trata solo de recordar el sufrimiento, sino de honrar la capacidad de supervivencia de una comunidad atrapada entre dos fuegos.
+                    </p>
+                `
+            },
+            {
+                title: "Capítulo 3: La Reconstrucción",
+                subtitle: "Levantando los Muros, Sembrando Esperanza",
+                content: `
+                    <p class="narrative-text mb-6">
+                        Con la firma de los Acuerdos de Paz en 1992, comenzó el verdadero desafío: la reconstrucción. El retorno a Laguna Seca no fue un evento de un solo día, sino un proceso lento y laborioso. Las familias regresaron a encontrar sus tierras cambiadas, pero su voluntad intacta.
+                    </p>
+                    <h4 class="text-xl font-bold text-doc-primary mt-8 mb-4">El Poder de la Organización (ADESCOS)</h4>
+                    <p class="narrative-text mb-6">
+                        La clave de la recuperación fue la organización comunitaria. Surgieron las Asociaciones de Desarrollo Comunal (ADESCOS), que se convirtieron en el motor del progreso. Ya no esperaban pasivamente la ayuda del gobierno central; los vecinos se organizaron para reparar caminos, gestionar la introducción de agua potable y luchar por la electrificación.
+                    </p>
+                    <ul class="list-disc pl-6 mb-6 space-y-2 text-gray-700">
+                        <li><strong>Infraestructura:</strong> La mejora de las vías de acceso permitió sacar las cosechas al mercado de Nueva Concepción con mayor facilidad.</li>
+                        <li><strong>Educación:</strong> La reconstrucción y ampliación de la escuela local se convirtió en una prioridad, entendiendo que el futuro estaba en los niños.</li>
+                        <li><strong>Solidaridad:</strong> Se revivieron tradiciones de trabajo colectivo, donde la comunidad entera ayuda a un vecino en la siembra o construcción.</li>
+                    </ul>
+                    <p class="narrative-text mb-6">
+                        Esta etapa definió la identidad moderna de Laguna Seca: una comunidad que sabe que su fuerza reside en la unidad y en la capacidad de autogestión.
+                    </p>
+                `
+            },
+            {
+                title: "Capítulo 4: Laguna Seca Hoy",
+                subtitle: "Entre la Tradición y la Modernidad",
+                content: `
+                    <p class="narrative-text mb-6">
+                        Hoy, Laguna Seca camina sobre la delgada línea entre preservar sus tradiciones y abrazar la modernidad. Las antenas de telefonía móvil se alzan junto a los árboles de conacaste, y los jóvenes revisan las redes sociales después de ayudar en la jornada agrícola.
+                    </p>
+                    <h4 class="text-xl font-bold text-doc-primary mt-8 mb-4">El Reto Generacional</h4>
+                    <p class="narrative-text mb-6">
+                        La migración sigue siendo un tema central. Muchos jóvenes miran hacia el norte o hacia la capital en busca de oportunidades que la agricultura tradicional ya no garantiza. Sin embargo, también hay un movimiento de innovación. Algunos agricultores están experimentando con nuevos cultivos, diversificando más allá del maíz y el frijol, introduciendo hortalizas y frutales aprovechando el microclima.
+                    </p>
+                    <h4 class="text-xl font-bold text-doc-primary mt-8 mb-4">Fútbol y Fiesta</h4>
+                    <p class="narrative-text mb-6">
+                        La vida social gira en torno a dos ejes: la fe y el deporte. Las fiestas patronales son el momento donde los que se fueron regresan, llenando el cantón de música y color. Y los domingos, la cancha de fútbol se convierte en el corazón palpitante de la comunidad, donde las rivalidades se resuelven con goles y abrazos. Laguna Seca está viva, transformándose, pero manteniendo su esencia de pueblo laborioso y amable.
+                    </p>
+                `
+            }
+        ];
+
+        // --- Logic: Chapter Selection ---
+        function loadChapter(index) {
+            // Update Text
+            const container = document.getElementById('chapter-content-area');
+            const data = chapters[index];
+            
+            // Fade out
+            container.style.opacity = '0';
+            
+            setTimeout(() => {
+                container.innerHTML = `
+                    <h2 class="text-3xl md:text-4xl font-serif font-bold text-doc-primary mb-2">${data.title}</h2>
+                    <h3 class="text-xl text-doc-clay font-medium mb-8 uppercase tracking-widest">${data.subtitle}</h3>
+                    <div class="prose prose-lg text-gray-700 max-w-none">
+                        ${data.content}
+                    </div>
+                `;
+                // Fade in
+                container.style.opacity = '1';
+                container.style.transition = 'opacity 0.5s ease-in';
+            }, 300);
+
+            // Update Active Card UI
+            document.querySelectorAll('.episode-card').forEach((card, i) => {
+                if (i === index) {
+                    card.classList.add('active');
+                    card.querySelector('span:last-child').style.opacity = '1';
+                } else {
+                    card.classList.remove('active');
+                    card.querySelector('span:last-child').style.opacity = '0';
+                }
+            });
+
+            state.currentChapter = index;
+        }
+
+        // --- Logic: Navigation ---
+        function scrollToSection(id) {
+            const element = document.getElementById(id);
+            if (element) {
+                element.scrollIntoView({ behavior: 'smooth' });
+            }
+        }
+
+        // --- Logic: Initialization & Observers ---
+        document.addEventListener('DOMContentLoaded', () => {
+            // Load initial chapter
+            loadChapter(0);
+
+            // Setup Intersection Observer for Fade-in effects
+            const observerOptions = {
+                threshold: 0.1,
+                rootMargin: "0px"
+            };
+
+            const observer = new IntersectionObserver((entries) => {
+                entries.forEach(entry => {
+                    if (entry.isIntersecting) {
+                        entry.target.classList.add('visible');
+                        observer.unobserve(entry.target); // Only animate once
+                    }
+                });
+            }, observerOptions);
+
+            document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+            // Initialize Charts
+            initCharts();
+        });
+
+        // --- Logic: Charts (Chart.js) ---
+        function initCharts() {
+            // Chart 1: Agriculture (Doughnut)
+            const ctxAg = document.getElementById('agricultureChart').getContext('2d');
+            new Chart(ctxAg, {
+                type: 'doughnut',
+                data: {
+                    labels: ['Maíz y Frijol', 'Ganadería (Pastos)', 'Hortalizas/Frutas', 'Bosque/Otros'],
+                    datasets: [{
+                        data: [45, 30, 10, 15],
+                        backgroundColor: ['#eab308', '#a66e5e', '#5d6d58', '#d1d5db'],
+                        borderWidth: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { position: 'bottom' }
+                    }
+                }
+            });
+
+            // Chart 2: Demographics (Bar)
+            const ctxPop = document.getElementById('populationChart').getContext('2d');
+            new Chart(ctxPop, {
+                type: 'bar',
+                data: {
+                    labels: ['0-14 Años', '15-29 Años', '30-59 Años', '60+ Años'],
+                    datasets: [{
+                        label: 'Población Estimada (%)',
+                        data: [28, 25, 35, 12],
+                        backgroundColor: '#8c7b64',
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { beginAtZero: true, grid: { display: false } },
+                        x: { grid: { display: false } }
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+        }
+    </script>
+</body>
+</html>)} required />
+                                        <button type="submit" className="w-full bg-indigo-600 text-white py-5 rounded-[2rem] font-black text-lg shadow-xl shadow-indigo-100 active:scale-[0.98] transition-all mt-4">CREAR META DE AHORRO</button>
+                                    </form>
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        };
+
+        // Renderizado Final
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
